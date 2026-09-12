@@ -469,7 +469,10 @@ async function startCamera(){
 
 function setMode(m){
   if (m === mode) return;
-  if (camStream){
+  // 仅在离开摄像头模式时释放视频流。
+  // startCamera() 成功后会调用 setMode('camera')；此处若无条件 stop，
+  // 会立刻关闭刚取得的轨道，导致界面显示“摄AR 0×0”并黑屏。
+  if (m !== 'camera' && camStream){
     camStream.getTracks().forEach((t) => t.stop());
     camStream = null;
     cam.srcObject = null;
