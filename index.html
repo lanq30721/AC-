@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>云海 AR · 手机后摄叠加</title>
+<style>
+:root{
+  --bg:#0a0d12; --text:#dfe7ef; --sub:#8fa6c2; --accent:#5fd8ff;
+  --panel:rgba(10,14,20,.72); --err:#ff9d97;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;height:100%;overflow:hidden;position:fixed;background:var(--bg);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  color:var(--text);touch-action:none;user-select:none;-webkit-user-select:none}
+#app{position:fixed;inset:0}
+/* 桌面预览背景：偏亮冷灰底(≈bgTone 0.42)。★调配色必须在这种底上调，不能纯黑——否则一定会把云调得过亮(skill 血泪) */
+#bgPreview{position:absolute;inset:0;display:none;
+  background:linear-gradient(180deg,#8d949c 0%,#70777f 55%,#575e67 100%)}
+#cam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;background:#000}
+#gl{position:absolute;inset:0;width:100%;height:100%;z-index:2}
+/* ── HUD / 错误（手机上没有 console，全部进 DOM）── */
+#hud{position:fixed;top:calc(10px + env(safe-area-inset-top));left:calc(10px + env(safe-area-inset-left));
+  z-index:10;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;color:var(--sub);
+  background:var(--panel);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  padding:5px 9px;border-radius:8px;pointer-events:none;white-space:pre;display:none}
+#err{position:fixed;bottom:calc(10px + env(safe-area-inset-bottom));left:calc(10px + env(safe-area-inset-left));
+  z-index:30;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;color:var(--err);
+  background:var(--panel);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  padding:5px 9px;border-radius:8px;max-width:70vw;white-space:pre-wrap;display:none;pointer-events:none}
+/* ── Portal 标定点 ── */
+#dots{position:fixed;inset:0;z-index:5;pointer-events:none}
+.pt{position:absolute;width:26px;height:26px;transform:translate(-50%,-50%);
+  display:flex;align-items:center;justify-content:center;
+  color:var(--accent);font:700 11px/1 ui-monospace,monospace}
+.pt::before{content:"";position:absolute;inset:5px;border-radius:50%;
+  border:2px solid var(--accent);background:rgba(10,13,18,.55)}
+/* ── 提示条 ── */
+#hint{position:fixed;left:50%;transform:translateX(-50%);
+  bottom:calc(168px + env(safe-area-inset-bottom));z-index:10;display:none;
+  font-size:12px;color:var(--text);background:var(--panel);
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  padding:6px 14px;border-radius:16px;pointer-events:none;white-space:nowrap}
+/* ── 控制面板 ── */
+#panel{position:fixed;left:50%;transform:translateX(-50%);
+  bottom:calc(10px + env(safe-area-inset-bottom));z-index:10;display:none;
+  width:min(92vw,340px);background:var(--panel);
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  border-radius:14px;border:1px solid rgba(95,216,255,.14);overflow:hidden}
+#panelHead{display:flex;justify-content:space-between;align-items:center;
+  padding:8px 12px;font-size:12px;cursor:pointer}
+#panelHead b{color:var(--text);font-weight:600;letter-spacing:.08em}
+#panelHead span{color:var(--sub)}
+#panelBody{padding:0 12px 12px}
+.row{display:flex;gap:8px;margin-bottom:10px}
+.row button{flex:1;padding:8px 0;font-size:12px;color:var(--text);
+  background:rgba(223,231,239,.06);border:1px solid rgba(223,231,239,.16);
+  border-radius:8px;cursor:pointer}
+.row button.on{color:var(--accent);border-color:var(--accent);background:rgba(95,216,255,.10)}
+.ctl{display:block;font-size:11px;color:var(--sub);margin:8px 0 2px}
+.ctl .lab{display:flex;justify-content:space-between;align-items:center}
+.ctl output{color:var(--accent);font-family:ui-monospace,monospace}
+input[type=range]{width:100%;height:24px;accent-color:var(--accent)}
+/* ── 入口 ── */
+#entry{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;
+  background:rgba(10,13,18,.42);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+#entry .card{width:min(84vw,320px);background:var(--panel);
+  border:1px solid rgba(95,216,255,.16);border-radius:18px;padding:28px 24px;text-align:center}
+#entry h1{font-size:22px;letter-spacing:.18em;margin-bottom:10px;color:var(--text)}
+#entry h1 i{color:var(--accent);font-style:normal}
+#entry p{font-size:12px;line-height:1.9;color:var(--sub);margin-bottom:22px}
+#entry button{display:block;width:100%;padding:12px 0;margin-top:10px;font-size:14px;
+  border-radius:10px;cursor:pointer;color:var(--text);
+  background:rgba(223,231,239,.05);border:1px solid rgba(223,231,239,.18)}
+#entry button.primary{color:#06222e;background:var(--accent);border-color:var(--accent);font-weight:700}
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.178.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="bgPreview"></div>
+  <video id="cam" playsinline muted autoplay></video>
+  <!-- WebGL canvas(#gl) 由 JS 注入，覆盖在摄像头画面之上 -->
+</div>
+<div id="dots"></div>
+<div id="hud"></div>
+<div id="hint"></div>
+<div id="err"></div>
+
+<div id="panel" class="ui">
+  <div id="panelHead"><b>云海控制</b><span id="fold">▾ 收起</span></div>
+  <div id="panelBody">
+    <div class="row">
+      <button id="btnCam">摄像头</button>
+      <button id="btnPortal">Portal</button>
+      <button id="btnReset">回正</button>
+    </div>
+    <label class="ctl"><span class="lab">云量<output id="oCov">0.55</output></span>
+      <input type="range" id="sCov" min="5" max="95" step="1"></label>
+    <label class="ctl"><span class="lab">速度<output id="oSpd">0.62</output></span>
+      <input type="range" id="sSpd" min="0" max="150" step="1"></label>
+    <label class="ctl"><span class="lab">高度<output id="oHgt">0.40</output></span>
+      <input type="range" id="sHgt" min="15" max="75" step="1"></label>
+  </div>
+</div>
+
+<div id="entry" class="ui">
+  <div class="card">
+    <h1>云海 <i>·</i> AR</h1>
+    <p>手机后置摄像头 · 现实画面之上<br>叠加三层视差的流动云海<br>桌面预览可用鼠标模拟视差调试</p>
+    <button id="btnEnterCam" class="primary">进入 · 后置摄像头</button>
+    <button id="btnEnterDesk">桌面预览（无摄像头）</button>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ===== src/config.js =====
+// 全部可调参数。注释格式：单位 + 调大调小分别变成什么 · [推荐区间]
+const CFG = {
+  // ── 云海形态 ──
+  coverage: 0.55,     // 云量 [0–1]。★调大=云更密更堵,调小=云稀疏露缝(改的是 fbm 阈值) · [0.15–0.9]
+  flowSpeed: 0.62,    // 流速(归一化倍率,无量纲)。★慢=海量感;快了像雾像烟 · [0.1–1.5]
+  seaHeight: 0.40,    // 云海顶线在竖屏中的位置 [0–1, 0=屏幕底]。调大=海面上涨,调小=退潮 · [0.15–0.75]
+  octaves: 4,         // fbm 层数(次)。⚠️手机全屏 >5 会掉帧,降它省性能 · [3–5]
+  masterAlpha: 0.92,  // 云海整体不透明度上限 [0–1]。留一点透出现实,融合感更好 · [0.6–1.0]
+
+  // ── 视差与手感 ──
+  parallaxDamp: 0.06, // 视差阻尼(无量纲)。有重量的量:小=迟而稳,大=轻飘 · [0.04–0.10]
+  parallaxAmp: 0.035, // 视差幅度(uv 单位)。三层按 pf 倍率区分远近;过大穿帮 · [0.02–0.06]
+  paramDamp: 0.18,    // 参数缓动阻尼(无量纲)。跟手的量:滑杆改动要立刻跟手 · [0.12–0.25]
+
+  // ── 层参数(远→近)：scale=噪声缩放 drift=漂移速率 pf=视差系数 bias=顶线偏移 alpha=不透明度 contrast=对比度 ──
+  layers: [
+    { scale: 1.05, drift: 0.011, pf: 0.25, bias: +0.10, alpha: 0.55, contrast: 0.45 }, // 远:大团慢移,灰而平
+    { scale: 1.95, drift: 0.024, pf: 0.55, bias: +0.04, alpha: 0.75, contrast: 0.75 }, // 中
+    { scale: 3.40, drift: 0.042, pf: 1.00, bias: -0.02, alpha: 0.90, contrast: 1.00 }, // 近:细碎,亮而立体
+  ],
+
+  // ── 边缘形态 ──
+  edgeWave: 0.16,     // 云顶起伏幅度(uv)。大=波涛,小=平镜面 · [0.06–0.30]
+  edgeSoft: 0.030,    // 云顶过渡带宽(uv)。小=锐利剪切,大=雾化发虚 · [0.015–0.08]
+  deepBand: 0.45,     // 顶线以下多深算「深海」(uv)。越大海面下的实心区越浅 · [0.2–0.8]
+  rimLight: 0.55,     // 云顶受光边强度(无量纲)。0=关 · [0–1]
+
+  // ── 颜色(近黑冷底 + 单一青色强调;云本体是内容色,不算强调色) ──
+  cBright: [0.93, 0.96, 1.00],  // 云受光部(冷白)
+  cShade:  [0.36, 0.44, 0.56],  // 云阴影(蓝灰)
+  cDeep:   [0.13, 0.16, 0.22],  // 深海部(近黑冷底,明度约5%带冷偏移,不用纯黑)
+  accent: 0x5fd8ff,   // 唯一强调色:只用于按钮选中态/Portal 边框,不铺面积
+  outlineDark: 0x0a0d12, // Portal 外圈暗边:亮背景(白墙/天空)下色相差会失效,靠明暗差兜底
+
+  // ── Portal ──
+  stencilRef: 42,     // 非零非一,方便与其他 pass 区分
+  portalDepth: 9.5,   // 门窗面距相机的锚定距离(米)。深度测试全关,只作几何锚定用
+  portalDarkExpand: 0.035, // 外圈暗边向外扩的比率(相对质心) · [0.02–0.06]
+
+  // ── 性能 / 平台 ──
+  pixelRatioMobile: 1.5,  // ⚠️手机全屏 fbm 上 >2 必掉帧 · [1–2]
+  pixelRatioDesktop: 2,
+  fov: 60,            // 垂直视场角(度)
+  cloudDist: 10,      // 云平面距相机(米),挂相机下,仅作铺满屏幕的几何载体
+};
+
+// ===== src/util.js =====
+const $ = (id) => document.getElementById(id);
+const clamp = THREE.MathUtils.clamp;
+const cam = $('cam'), bgPreview = $('bgPreview'), hud = $('hud'), hint = $('hint');
+const errEl = $('err');
+const showErr = (m) => { errEl.textContent = String(m); errEl.style.display = 'block'; console.error(m); };
+const clearErr = () => { errEl.textContent = ''; errEl.style.display = 'none'; };
+const isMobile = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+
+// ===== src/renderer.js =====
+// 透明三件套:alpha:true + scene.background=null + clearAlpha 0。
+// stencil:true 必须显式写,不写则整套 Portal 静默失效(不报错,只是没洞)。
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, stencil: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, isMobile ? CFG.pixelRatioMobile : CFG.pixelRatioDesktop));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0); // 本项目现实背景由 DOM 层(#cam 视频 / #bgPreview 灰底)提供
+renderer.domElement.id = 'gl';
+$('app').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = null;
+const camera = new THREE.PerspectiveCamera(CFG.fov, innerWidth / innerHeight, 0.1, 100);
+scene.add(camera); // 云平面与 Portal 都挂在相机下,相机必须入场景
+
+// ===== src/glsl.js =====
+// 场公式只写这一份。多处复用的 shader 逻辑提成共享字符串,逐字一致(skill 坑 #5)
+const F = (x) => Number(x).toFixed(5);
+const layerArgs = (l) => `${F(l.scale)}, ${F(l.drift)}, ${F(l.pf)}, ${F(l.bias)}, ${F(l.alpha)}, ${F(l.contrast)}`;
+
+const VERT = /* glsl */`
+varying vec2 vUv;
+void main(){
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+
+const FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform float uTime, uFlow, uCoverage, uHeight, uMasterAlpha;
+uniform vec2 uPar;
+uniform int uOct;
+uniform vec3 uBright, uShade, uDeep;
+
+#define EDGE_WAVE ${F(CFG.edgeWave)}
+#define EDGE_SOFT ${F(CFG.edgeSoft)}
+#define DEEP_BAND ${F(CFG.deepBand)}
+#define RIM_LIGHT ${F(CFG.rimLight)}
+
+float hash21(vec2 p){
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);           // 平滑插值,块状值噪声会毁掉云
+  float a = hash21(i);
+  float b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0));
+  float d = hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+float fbm(vec2 p){
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 6; i++){
+    if (i >= uOct) break;                // uOct 由 CPU 传,手机可降层省性能
+    v += a * vnoise(p);
+    p = p * 2.03 + vec2(17.3, 9.1);
+    a *= 0.5;
+  }
+  return v;
+}
+
+// 单层云海。S=噪声缩放 D=漂移速率 P=视差系数 B=顶线偏移 A=不透明度 K=对比度
+// 视差做在 ls(整层含顶线一起挪)上,不是只挪纹理——否则顶线不动,视差只体现在内部花纹
+vec4 cloudLayer(vec2 suv, float S, float D, float P, float B, float A, float K){
+  vec2 ls = suv + uPar * P;
+  vec2 uv = ls * S;
+  uv.x += uFlow * D + uTime * 0.006;     // 漂移 + 与流速无关的缓慢演化(云是活的)
+  uv.y += uFlow * D * 0.18;              // 微微上飘
+  float n = fbm(uv);
+  float e = fbm(uv * 0.55 + vec2(3.1, 7.7)); // 顶线起伏用另一份场,与密度场解耦
+  float top = uHeight + B + (e - 0.5) * EDGE_WAVE;
+  float fill = smoothstep(top + EDGE_SOFT, top - EDGE_SOFT, ls.y); // 1=顶线以下
+  float thr = mix(0.80, 0.40, uCoverage);
+  float dens = smoothstep(thr, thr + 0.30, n);
+  float depth = smoothstep(top, top - DEEP_BAND, ls.y); // 0=顶 1=深海
+  dens = max(dens, depth * 0.9);         // 深处必实,破洞只出现在顶线附近
+  float a = fill * dens * A * uMasterAlpha;
+  float lit = clamp(pow(max(n, 0.0), 1.4) * 1.7 * K, 0.0, 1.0);
+  vec3 c = mix(uShade, uBright, lit);
+  c = mix(c, uDeep, depth * 0.6);
+  float rim = smoothstep(top - 0.12, top - 0.02, ls.y) * fill * dens;
+  c += uBright * rim * RIM_LIGHT * 0.5;  // 云顶受光边,微弱,别调亮
+  return vec4(c, a);
+}
+
+void main(){
+  // 远→近,画家的算法合成。缝隙处 a→0,透出摄像头画面
+  vec3 col = vec3(0.0);
+  float acc = 0.0;
+  vec4 L;
+  L = cloudLayer(vUv, ${layerArgs(CFG.layers[0])}); col = col * (1.0 - L.a) + L.rgb * L.a; acc = acc + L.a * (1.0 - acc);
+  L = cloudLayer(vUv, ${layerArgs(CFG.layers[1])}); col = col * (1.0 - L.a) + L.rgb * L.a; acc = acc + L.a * (1.0 - acc);
+  L = cloudLayer(vUv, ${layerArgs(CFG.layers[2])}); col = col * (1.0 - L.a) + L.rgb * L.a; acc = acc + L.a * (1.0 - acc);
+  gl_FragColor = vec4(col, acc);
+}`;
+
+// ===== src/cloud.js =====
+const uniforms = {
+  uTime:  { value: 0 },
+  uFlow:  { value: 0 },
+  uCoverage: { value: CFG.coverage },
+  uHeight:   { value: CFG.seaHeight },
+  uMasterAlpha: { value: CFG.masterAlpha },
+  uPar: { value: new THREE.Vector2() },
+  uOct: { value: CFG.octaves },
+  uBright: { value: new THREE.Vector3(...CFG.cBright) },
+  uShade:  { value: new THREE.Vector3(...CFG.cShade) },
+  uDeep:   { value: new THREE.Vector3(...CFG.cDeep) },
+};
+
+const cloudMat = new THREE.ShaderMaterial({
+  uniforms, vertexShader: VERT, fragmentShader: FRAG,
+  transparent: true, depthTest: false, depthWrite: false,
+  stencilWrite: true,
+  stencilRef: CFG.stencilRef,
+  stencilFunc: THREE.AlwaysStencilFunc, // Portal 开启后切 Equal
+  stencilZPass: THREE.KeepStencilOp,
+});
+
+const cloudMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), cloudMat);
+cloudMesh.renderOrder = 1;      // 洞后世界层,skill §5.3
+cloudMesh.frustumCulled = false;
+camera.add(cloudMesh);
+cloudMesh.position.z = -CFG.cloudDist;
+
+function fitCloud(){
+  const h = 2 * Math.tan(THREE.MathUtils.degToRad(CFG.fov / 2)) * CFG.cloudDist;
+  const w = h * camera.aspect;
+  cloudMesh.scale.set(w * 1.02, h * 1.02, 1); // 2% 余量防边缘露缝
+}
+fitCloud();
+
+// ===== src/portal.js =====
+// stencil portal 层序(skill §5.3):
+//   mask  renderOrder -10  colorWrite=false  depth全关  Always ref=42 ZPass=Replace
+//   云海  renderOrder   1  正常输出                      Equal  ref=42 三op全Keep
+//   暗边  renderOrder  19  正常输出  depth全关            (亮背景兜底)
+//   边框  renderOrder  20  正常输出  depth全关
+const portal = { state: 'off', pts: [] }; // pts 存 NDC,旋转屏幕后按 NDC 重建,窗不跑位
+const dotEls = [];
+let maskMesh = null, edgeLine = null, edgeDark = null, previewLine = null;
+
+const maskMat = new THREE.MeshBasicMaterial({
+  colorWrite: false, depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+  stencilWrite: true, stencilRef: CFG.stencilRef,
+  stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: THREE.ReplaceStencilOp,
+});
+const edgeMat = new THREE.LineBasicMaterial({ color: CFG.accent, transparent: true, opacity: 0.95, depthTest: false });
+const darkMat = new THREE.LineBasicMaterial({ color: CFG.outlineDark, transparent: true, opacity: 0.85, depthTest: false });
+const prevMat = new THREE.LineBasicMaterial({ color: CFG.accent, transparent: true, opacity: 0.5, depthTest: false });
+
+function ndcToLocal(p){
+  const d = CFG.portalDepth;
+  const h = Math.tan(THREE.MathUtils.degToRad(CFG.fov / 2)) * 2 * d;
+  const w = h * camera.aspect;
+  return new THREE.Vector3(p.x * w / 2, p.y * h / 2, -d);
+}
+
+function disposePortalMeshes(){
+  for (const m of [maskMesh, edgeLine, edgeDark, previewLine]){
+    if (m){ camera.remove(m); m.geometry.dispose(); }
+  }
+  maskMesh = edgeLine = edgeDark = previewLine = null;
+}
+
+function buildPortal(){
+  disposePortalMeshes();
+  if (portal.pts.length !== 4) return;
+  // 按质心极角排序:任意点击顺序都能得到简单(非自交)四边形
+  const c = portal.pts.reduce((a, p) => ({ x: a.x + p.x / 4, y: a.y + p.y / 4 }), { x: 0, y: 0 });
+  const sorted = [...portal.pts].sort((a, b) =>
+    Math.atan2(a.y - c.y, a.x - c.x) - Math.atan2(b.y - c.y, b.x - c.x));
+  const loc = sorted.map(ndcToLocal);
+
+  const v = [];
+  [0, 1, 2, 0, 2, 3].forEach((i) => v.push(loc[i].x, loc[i].y, loc[i].z));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  maskMesh = new THREE.Mesh(g, maskMat);
+  maskMesh.renderOrder = -10;
+  maskMesh.frustumCulled = false;
+  camera.add(maskMesh);
+
+  // 外圈暗边:向质心外扩,亮背景(白墙/天空)下靠明暗差兜底(skill §5.6)
+  const k = 1 + CFG.portalDarkExpand;
+  const dk = sorted.map((p) => ndcToLocal({ x: c.x + (p.x - c.x) * k, y: c.y + (p.y - c.y) * k }));
+  edgeDark = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(dk), darkMat);
+  edgeDark.renderOrder = 19;
+  camera.add(edgeDark);
+
+  edgeLine = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(loc), edgeMat);
+  edgeLine.renderOrder = 20;
+  camera.add(edgeLine);
+
+  cloudMat.stencilFunc = THREE.EqualStencilFunc;
+}
+
+function clearDots(){
+  dotEls.forEach((d) => d.remove());
+  dotEls.length = 0;
+}
+
+function positionDot(el, ndc){
+  el.style.left = ((ndc.x + 1) / 2 * 100) + '%';
+  el.style.top = ((1 - ndc.y) / 2 * 100) + '%';
+}
+
+function updatePortalUI(){
+  const b = $('btnPortal');
+  b.classList.toggle('on', portal.state !== 'off');
+  b.textContent = portal.state === 'off' ? 'Portal' :
+                  portal.state === 'placing' ? `画窗 ${portal.pts.length}/4` : '清除 Portal';
+  if (portal.state === 'placing'){
+    hint.textContent = `点按屏幕,标出门/窗的四个角 · ${portal.pts.length}/4(点 Portal 按钮取消)`;
+    hint.style.display = 'block';
+    if (portal.pts.length >= 2){
+      if (previewLine){ camera.remove(previewLine); previewLine.geometry.dispose(); }
+      const loc = portal.pts.map(ndcToLocal);
+      previewLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(loc), prevMat);
+      previewLine.renderOrder = 18;
+      camera.add(previewLine);
+    }
+  } else {
+    hint.style.display = 'none';
+    if (previewLine){ camera.remove(previewLine); previewLine.geometry.dispose(); previewLine = null; }
+  }
+}
+
+function setPortalState(s){
+  portal.state = s;
+  if (s === 'off'){
+    portal.pts = [];
+    clearDots();
+    disposePortalMeshes();
+    cloudMat.stencilFunc = THREE.AlwaysStencilFunc;
+  } else if (s === 'placing'){
+    portal.pts = [];
+    clearDots();
+    disposePortalMeshes();
+    cloudMat.stencilFunc = THREE.AlwaysStencilFunc; // 画完四点才切 Equal
+  }
+  updatePortalUI();
+}
+
+function addPortalPoint(cx, cy){
+  if (portal.pts.length >= 4) return;
+  const ndc = { x: (cx / innerWidth) * 2 - 1, y: 1 - (cy / innerHeight) * 2 };
+  portal.pts.push(ndc);
+  const el = document.createElement('div');
+  el.className = 'pt';
+  el.textContent = portal.pts.length;
+  positionDot(el, ndc);
+  $('dots').appendChild(el);
+  dotEls.push(el);
+  if (portal.pts.length === 4){
+    portal.state = 'on';
+    buildPortal();
+  }
+  updatePortalUI();
+}
+
+// ===== src/camera.js =====
+let mode = 'none'; // 'camera' | 'desktop'
+let camStream = null;
+let appEntered = false;
+
+async function startCamera(){
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    showErr('此环境不支持摄像头:需 https 或 localhost(见部署说明)');
+    return false;
+  }
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    });
+    cam.srcObject = stream;
+    await cam.play();
+    camStream = stream;
+    return true;
+  }catch(e){
+    showErr('摄像头失败: ' + (e.message || e.name));
+    return false;
+  }
+}
+
+function setMode(m){
+  if (m === mode) return;
+  if (camStream){
+    camStream.getTracks().forEach((t) => t.stop());
+    camStream = null;
+    cam.srcObject = null;
+  }
+  mode = m;
+  cam.style.display = m === 'camera' ? 'block' : 'none';
+  bgPreview.style.display = m === 'desktop' ? 'block' : 'none';
+  $('btnCam').classList.toggle('on', m === 'camera');
+  $('btnCam').textContent = m === 'camera' ? '关摄像头' : '摄像头';
+}
+
+// ===== src/parallax.js =====
+// 手机:陀螺仪相对倾斜(以首帧为基线) → 小幅视差,不做 1:1 世界锁,避免漂移。
+// 桌面:鼠标位置模拟。二者共用 parTarget,主循环里统一阻尼逼近。
+const parTarget = new THREE.Vector2();
+const parCur = new THREE.Vector2();
+let hasGyro = false, gyroBase = null;
+
+function onGyro(e){
+  if (e.beta == null || e.gamma == null) return;
+  hasGyro = true;
+  if (!gyroBase) gyroBase = { b: e.beta, g: e.gamma };
+  const db = clamp(e.beta - gyroBase.b, -30, 30) / 30;
+  const dg = clamp(e.gamma - gyroBase.g, -30, 30) / 30;
+  parTarget.set(dg, db).multiplyScalar(CFG.parallaxAmp);
+}
+
+async function requestGyro(){
+  try{
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function'){
+      // iOS 13+:必须在用户手势里请求
+      const r = await DeviceOrientationEvent.requestPermission();
+      if (r === 'granted') window.addEventListener('deviceorientation', onGyro);
+    } else {
+      window.addEventListener('deviceorientation', onGyro);
+    }
+  }catch(e){ /* 桌面无陀螺仪,静默 */ }
+}
+
+window.addEventListener('pointermove', (e) => {
+  if (hasGyro) return; // 有陀螺仪就让给陀螺仪
+  parTarget.set(
+    (e.clientX / innerWidth - 0.5) * 2 * CFG.parallaxAmp,
+    -(e.clientY / innerHeight - 0.5) * 2 * CFG.parallaxAmp
+  );
+});
+
+// ===== src/ui.js =====
+const params   = { coverage: CFG.coverage, flow: CFG.flowSpeed, height: CFG.seaHeight };
+const targets  = { ...params };
+
+function bindUI(){
+  const sCov = $('sCov'), sSpd = $('sSpd'), sHgt = $('sHgt');
+  sCov.value = Math.round(CFG.coverage * 100);
+  sSpd.value = Math.round(CFG.flowSpeed * 100);
+  sHgt.value = Math.round(CFG.seaHeight * 100);
+  $('oCov').textContent = params.coverage.toFixed(2);
+  $('oSpd').textContent = params.flow.toFixed(2);
+  $('oHgt').textContent = params.height.toFixed(2);
+
+  sCov.addEventListener('input', () => {
+    targets.coverage = sCov.value / 100;
+    $('oCov').textContent = targets.coverage.toFixed(2);
+  });
+  sSpd.addEventListener('input', () => {
+    targets.flow = sSpd.value / 100;
+    $('oSpd').textContent = targets.flow.toFixed(2);
+  });
+  sHgt.addEventListener('input', () => {
+    targets.height = sHgt.value / 100;
+    $('oHgt').textContent = targets.height.toFixed(2);
+  });
+
+  $('btnCam').addEventListener('click', async () => {
+    if (mode === 'camera'){ setMode('desktop'); return; }
+    clearErr();
+    if (await startCamera()) setMode('camera');
+  });
+
+  $('btnPortal').addEventListener('click', () => {
+    // off→画窗;placing→取消;on→清除
+    setPortalState(portal.state === 'off' ? 'placing' : 'off');
+  });
+
+  $('btnReset').addEventListener('click', () => {
+    gyroBase = null;      // 重新以当前握姿为基线
+    parTarget.set(0, 0);
+  });
+
+  $('panelHead').addEventListener('click', () => {
+    const b = $('panelBody');
+    const open = b.style.display !== 'none';
+    b.style.display = open ? 'none' : 'block';
+    $('fold').textContent = open ? '▸ 展开' : '▾ 收起';
+  });
+
+  $('btnEnterCam').addEventListener('click', async () => {
+    await enterApp(true);
+  });
+  $('btnEnterDesk').addEventListener('click', async () => {
+    await enterApp(false);
+  });
+}
+
+async function enterApp(withCamera){
+  if (appEntered) return;
+  appEntered = true;
+  $('entry').style.display = 'none';
+  $('panel').style.display = 'block';
+  hud.style.display = 'block';
+  await requestGyro();
+  if (withCamera){
+    if (await startCamera()) setMode('camera');
+    else { setMode('desktop'); showErr('已回退桌面预览 ↑'); }
+  } else {
+    setMode('desktop');
+  }
+}
+
+// Portal 标定:点按画布区域(.ui 以外)收点
+window.addEventListener('pointerdown', (e) => {
+  if (!appEntered) return;
+  if (e.target.closest('.ui')) return;
+  if (portal.state === 'placing') addPortalPoint(e.clientX, e.clientY);
+});
+
+window.addEventListener('contextmenu', (e) => e.preventDefault());
+
+function onResize(){
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  fitCloud();
+  if (portal.state === 'on') buildPortal();          // 按存下的 NDC 重建,窗保持屏幕原位
+  portal.pts.forEach((p, i) => { if (dotEls[i]) positionDot(dotEls[i], p); });
+}
+window.addEventListener('resize', onResize);
+window.addEventListener('orientationchange', () => setTimeout(onResize, 120));
+
+// ===== src/loop.js =====
+const clock = new THREE.Clock();
+let simTime = 0, flowPhase = 0, hudFrames = 0, hudTime = 0, fps = 0;
+
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05); // 夹住,防切标签回来炸掉
+  simTime += dt;
+  flowPhase += dt * params.flow;               // 流速积分,改速度不跳变
+
+  parCur.lerp(parTarget, CFG.parallaxDamp);                       // 有重量的量
+  params.coverage += (targets.coverage - params.coverage) * CFG.paramDamp; // 跟手的量
+  params.flow    += (targets.flow    - params.flow)    * CFG.paramDamp;
+  params.height  += (targets.height  - params.height)  * CFG.paramDamp;
+
+  uniforms.uTime.value = simTime;
+  uniforms.uFlow.value = flowPhase;
+  uniforms.uCoverage.value = params.coverage;
+  uniforms.uHeight.value = params.height;
+  uniforms.uPar.value.copy(parCur);
+
+  renderer.render(scene, camera);
+
+  // DOM 更新每 6 帧一次,别每帧碰布局(skill 坑 #11)
+  hudFrames++; hudTime += dt;
+  if (hudFrames >= 6){
+    fps = hudTime > 0 ? Math.round(hudFrames / hudTime) : 0;
+    hudFrames = 0; hudTime = 0;
+    const modeTxt = mode === 'camera' ? `摄AR ${cam.videoWidth}×${cam.videoHeight}` : '桌面';
+    const parSrc = hasGyro ? '陀螺' : (isMobile ? '无' : '鼠标');
+    const ptTxt = portal.state === 'off' ? 'Portal关' :
+                  portal.state === 'placing' ? `画窗${portal.pts.length}/4` : 'Portal开';
+    hud.textContent = `${modeTxt} · ${ptTxt} · 视差:${parSrc} · ${fps}fps`;
+  }
+});
+
+// ===== src/main.js(启动)=====
+bindUI();
+</script>
+</body>
+</html>
